@@ -1,0 +1,69 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { createServerClient } from '@supabase/ssr'
+import { createClient } from '@supabase/supabase-js'
+import { cookies } from 'next/headers'
+
+export async function GET(request: NextRequest) {
+  const { searchParams, origin } = new URL(request.url)
+  const code = searchParams.get('code')
+
+  if (!code) {
+    return NextResponse.redirect(`${origin}/admin/login?error=auth_error`)
+  }
+
+  try {
+    const cookieStore = await cookies()
+
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          getAll() {
+            return cookieStore.getAll()
+          },
+          setAll(cookiesToSet) {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options)
+            )
+          },
+        },
+      }
+    )
+
+    const { error } = await supabase.auth.exchangeCodeForSession(code)
+
+    if (error) {
+      return NextResponse.redirect(`${origin}/admin/login?error=auth_error`)
+    }
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+
+    if (!user) {
+      return NextResponse.redirect(`${origin}/admin/login?error=auth_error`)
+    }
+
+    // RLSをバイパスしてADMINロールを確認
+    const adminClient = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    )
+
+    const { data: profile } = await adminClient
+      .from('users')
+      .select('role')
+      .eq('auth_user_id', user.id)
+      .single()
+
+    if (!profile || profile.role !== 'ADMIN') {
+      await supabase.auth.signOut()
+      return NextResponse.redirect(`${origin}/admin/login?error=not_admin`)
+    }
+
+    return NextResponse.redirect(`${origin}/admin/dashboard`)
+  } catch {
+    return NextResponse.redirect(`${origin}/admin/login?error=auth_error`)
+  }
+}
